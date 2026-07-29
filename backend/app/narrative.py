@@ -189,11 +189,13 @@ The traced_figures array must map EVERY monetary figure and count in your narrat
 back to its source field from the report. This is mandatory."""
 
 
-def _get_api_key() -> str:
-    """Retrieve OpenRouter API key from environment variable or .env file."""
+def _load_env_config() -> tuple[str, str]:
+    """Retrieve OpenRouter API key and model name from environment variables or .env file."""
     api_key = os.environ.get("OPENROUTER_API_KEY", "").strip()
-    if api_key and not api_key.startswith("your_"):
-        return api_key
+    model = os.environ.get("OPENROUTER_MODEL", "").strip()
+
+    if api_key.startswith("your_"):
+        api_key = ""
 
     # Check for .env file in backend/ directory or root directory
     candidates = [
@@ -205,27 +207,46 @@ def _get_api_key() -> str:
             try:
                 for line in env_path.read_text(encoding="utf-8").splitlines():
                     line = line.strip()
-                    if line.startswith("OPENROUTER_API_KEY="):
+                    if line.startswith("OPENROUTER_API_KEY=") and not api_key:
                         val = line.split("=", 1)[1].strip().strip('"').strip("'")
                         if val and not val.startswith("your_"):
+                            api_key = val
                             os.environ["OPENROUTER_API_KEY"] = val
-                            return val
+                    elif line.startswith("OPENROUTER_MODEL=") and not model:
+                        val = line.split("=", 1)[1].strip().strip('"').strip("'")
+                        if val:
+                            model = val
+                            os.environ["OPENROUTER_MODEL"] = val
             except Exception:
                 pass
 
-    return ""
+    if not model:
+        model = "google/gemini-2.0-flash-001"
+
+    return api_key, model
+
+
+def _get_api_key() -> str:
+    """Retrieve OpenRouter API key."""
+    key, _ = _load_env_config()
+    return key
 
 
 async def generate_narrative(
     recon: ReconciliationReport,
     analytics: AnalyticsReport,
+    model: str | None = None,
 ) -> NarrativeResponse:
     """
     Generate an LLM narrative from the deterministic reports using OpenRouter API.
 
+    Supports custom model selection via the `model` parameter,
+    OPENROUTER_MODEL environment variable / .env file, or defaults to
+    google/gemini-2.0-flash-001.
+
     Falls back gracefully if the LLM is unavailable or returns garbage.
     """
-    api_key = _get_api_key()
+    api_key, env_model = _load_env_config()
 
     report_context = _build_report_context(recon, analytics)
     figure_lookup = _build_figure_lookup(recon, analytics)
@@ -238,7 +259,7 @@ async def generate_narrative(
             error="OPENROUTER_API_KEY not set: using deterministic fallback",
         )
 
-    model_name = os.environ.get("OPENROUTER_MODEL", "google/gemini-2.0-flash-001")
+    model_name = model or env_model or "google/gemini-2.0-flash-001"
 
     try:
         import httpx

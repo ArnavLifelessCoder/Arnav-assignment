@@ -235,6 +235,7 @@ class TestNarrative:
     async def test_fallback_when_no_api_key(self, monkeypatch):
         """When OPENROUTER_API_KEY is unset, use deterministic fallback."""
         monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+        monkeypatch.setattr("app.narrative._load_env_config", lambda: ("", "google/gemini-2.0-flash-001"))
 
         raw = _load_log("billing_log_2026-07-27.json")
         valid, errors = parse_billing_log(raw)
@@ -300,6 +301,55 @@ class TestNarrative:
         assert "3,200" in res.narrative
         assert len(res.traced_figures) == 1
         assert res.traced_figures[0].source_field == "total_collected_paise"
+
+    @pytest.mark.asyncio
+    async def test_custom_model_selection(self, monkeypatch):
+        """Test overriding model via parameter."""
+        monkeypatch.setenv("OPENROUTER_API_KEY", "test_key_123")
+
+        captured_model = None
+
+        class MockResponse:
+            status_code = 200
+            def json(self):
+                return {
+                    "model": captured_model,
+                    "choices": [
+                        {
+                            "message": {
+                                "content": json.dumps({
+                                    "narrative": "Summary using custom model",
+                                    "traced_figures": []
+                                })
+                            }
+                        }
+                    ]
+                }
+
+        class MockAsyncClient:
+            def __init__(self, *args, **kwargs):
+                pass
+            async def __aenter__(self):
+                return self
+            async def __aexit__(self, *args):
+                pass
+            async def post(self, url, json=None, **kwargs):
+                nonlocal captured_model
+                if json:
+                    captured_model = json.get("model")
+                return MockResponse()
+
+        import httpx
+        monkeypatch.setattr(httpx, "AsyncClient", MockAsyncClient)
+
+        raw = _load_log("billing_log_2026-07-27.json")
+        valid, errors = parse_billing_log(raw)
+        recon = compute_reconciliation(valid, "CLN-KNP-014", "2026-07-27", errors)
+        analytics = compute_analytics(valid, "CLN-KNP-014", "2026-07-27")
+
+        res = await generate_narrative(recon, analytics, model="openai/gpt-4o-mini")
+        assert captured_model == "openai/gpt-4o-mini"
+        assert res.llm_model == "openrouter/openai/gpt-4o-mini"
 
 
 if __name__ == "__main__":
