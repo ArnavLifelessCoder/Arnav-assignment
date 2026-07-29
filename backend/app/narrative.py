@@ -221,12 +221,12 @@ def _load_env_config() -> tuple[str, str]:
                 pass
 
 FREE_MODELS = [
-    "google/gemini-2.0-flash-lite-preview-02-05:free",
-    "meta-llama/llama-3.3-70b-instruct:free",
-    "google/gemini-2.0-flash-exp:free",
-    "qwen/qwen-2.5-coder-32b-instruct:free",
-    "deepseek/deepseek-r1:free",
-    "mistralai/mistral-7b-instruct:free",
+    "google/gemma-4-31b-it",
+    "google/gemma-4-31b",
+    "google/gemma-4-26b-a4b-it",
+    "google/gemma-4-26b-a4b",
+    "google/gemma-4-31b:free",
+    "google/gemma-4-26b-a4b:free",
 ]
 
 
