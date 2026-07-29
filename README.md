@@ -3,8 +3,9 @@
 A full-stack financial reconciliation and operational intelligence platform that ingests a clinic's daily billing log and produces:
 1. **Deterministic EOD Reconciliation**: Gross billed, net collected, outstanding balance, and refunds (split by payment channel).
 2. **Advanced Operational Analytics**: Hourly revenue velocity, shift distribution, price-tier breakdown, polypharmacy rate, AOV, and doctor prescription leaderboards.
-3. **Executive Narrative Briefing**: AI-synthesized operational overview with deterministic figure lineage tracing.
-4. **One-Click CSV Audit Export**: Instant export of financial settlement reports for accounting.
+3. **Executive Narrative Briefing**: AI-synthesized operational overview using OpenRouter 100% Free Models (`$0` cost) with deterministic figure lineage tracing.
+4. **Auto-Seeding & Instant Preview**: Automatically pre-loads sample billing logs on initial startup so the dashboard is immediately ready.
+5. **One-Click CSV Audit Export**: Instant export of financial settlement reports for accounting.
 
 ---
 
@@ -15,8 +16,8 @@ A full-stack financial reconciliation and operational intelligence platform that
 | Backend | Python 3.12, FastAPI, Pydantic, SQLite |
 | Frontend | React 18, Vite, Recharts, React Router |
 | Design System | Warm Porcelain & Ocean Cobalt Fintech System |
-| LLM | OpenRouter API (with deterministic fallback) |
-| Testing | pytest |
+| LLM | OpenRouter Free Tier API ($0 cost `:free` models with automatic failover) |
+| Testing | pytest (17 automated tests) |
 
 ---
 
@@ -25,22 +26,23 @@ A full-stack financial reconciliation and operational intelligence platform that
 ```
 ├── backend/
 │   ├── app/
-│   │   ├── main.py            # FastAPI entry point + CORS
+│   │   ├── main.py            # FastAPI entry point, static SPA serving & auto-seed
 │   │   ├── models.py          # Pydantic schemas (input + output)
 │   │   ├── parser.py          # JSON parsing + per-row validation
 │   │   ├── reconciliation.py  # Deterministic EOD reconciliation
 │   │   ├── analytics.py       # Deterministic analytics & shift metrics
-│   │   ├── narrative.py       # LLM narrative + figure tracing
+│   │   ├── narrative.py       # OpenRouter LLM narrative + free model failover + figure tracing
 │   │   ├── database.py        # SQLite persistence layer
 │   │   ├── routes.py          # REST API endpoints
 │   │   └── tests/
-│   │       └── test_billing.py # 14 tests covering all edge cases
+│   │       └── test_billing.py # 17 tests covering parser, reconciliation, analytics & LLM
+│   ├── .python-version        # Python 3.12.8 deployment pin
 │   └── requirements.txt
 │
 ├── frontend/
 │   ├── src/
 │   │   ├── App.jsx
-│   │   ├── api/client.js      # API client + helpers
+│   │   ├── api/client.js      # API client (relative /api routing + VITE_API_BASE_URL)
 │   │   ├── utils/exportCsv.js # One-click CSV export utility
 │   │   ├── components/
 │   │   │   ├── HeaderNav.jsx             # Top navigation header & upload/export controls
@@ -48,17 +50,19 @@ A full-stack financial reconciliation and operational intelligence platform that
 │   │   │   ├── AnalyticsPage.jsx          # Velocity chart, shift cards & doctor leaderboards
 │   │   │   └── NarrativePage.jsx          # Executive briefing memo & lineage ledger
 │   │   └── index.css          # Executive design system
+│   ├── public/_redirects      # SPA routing fallback for Netlify
 │   └── index.html
 │
-├── billing_log_2026-07-25.json  # Sample data (refund-only day)
-├── billing_log_2026-07-26.json  # Sample data (empty day)
-├── billing_log_2026-07-27.json  # Sample data (normal day)
+├── netlify.toml               # Netlify deployment configuration
+├── billing_log_2026-07-25.json # Sample data (refund-only day)
+├── billing_log_2026-07-26.json # Sample data (empty day)
+├── billing_log_2026-07-27.json # Sample data (normal day)
 └── README.md
 ```
 
 ---
 
-## Quick Start
+## Quick Start (Local Development)
 
 ### Prerequisites
 - Python 3.10+ with pip
@@ -71,10 +75,10 @@ cd backend
 pip install -r requirements.txt
 
 # Optional: Set OpenRouter API key for LLM narratives in backend/.env
-# Without it, the system uses a deterministic fallback narrative
-# OPENROUTER_API_KEY=your-api-key-here
+# Get a free key at: https://openrouter.ai/
+OPENROUTER_API_KEY=your_openrouter_api_key_here
 
-# Start the server
+# Start the backend server
 uvicorn app.main:app --reload --port 8000
 ```
 
@@ -86,9 +90,9 @@ npm install
 npm run dev
 ```
 
-The frontend runs on `http://localhost:5173` and the backend on `http://localhost:8000`.
+The frontend runs on `http://localhost:5173` and automatically proxies `/api` calls to the backend on `http://localhost:8000`.
 
-### Run Tests
+### Run Automated Tests
 
 ```bash
 cd backend
@@ -97,97 +101,66 @@ python -m pytest app/tests/ -v
 
 ---
 
-## REST API Contract
+## LLM Narrative Integration (OpenRouter $0 Free Models)
 
-Base URL: `http://localhost:8000`
+Narrative briefings use OpenRouter with zero-cost `$0` models. It features **automatic failover** across free models:
+1. `google/gemini-2.0-flash-lite-preview-02-05:free`
+2. `meta-llama/llama-3.3-70b-instruct:free`
+3. `google/gemini-2.0-flash-exp:free`
+4. `qwen/qwen-2.5-coder-32b-instruct:free`
+5. `deepseek/deepseek-r1:free`
+6. `mistralai/mistral-7b-instruct:free`
 
-### `POST /api/upload`
-
-Upload a billing log JSON file for processing.
-
-**Request:** `multipart/form-data` with `file` field (`.json` file)
-
-**Response (200):**
-```json
-{
-  "status": "success",
-  "clinic_id": "CLN-KNP-014",
-  "date": "2026-07-27",
-  "records_processed": 19,
-  "records_rejected": 0,
-  "validation_errors": [],
-  "reconciliation": { ... },
-  "analytics": { ... },
-  "narrative": { ... }
-}
-```
-
-**Error Response (400):**
-```json
-{
-  "detail": "Invalid JSON: ..."
-}
-```
-
-### `GET /api/reports`
-
-List all available reports.
-
-**Response:** `[{ "clinic_id": "...", "date": "...", "created_at": "..." }]`
-
-### `GET /api/reports/{clinic_id}/{date}`
-
-Get the full report (reconciliation + analytics + narrative).
-
-### `GET /api/reconciliation/{clinic_id}/{date}`
-
-Get reconciliation data only.
-
-### `GET /api/analytics/{clinic_id}/{date}`
-
-Get analytics data only.
-
-### `GET /api/narrative/{clinic_id}/{date}`
-
-Get the executive brief with traced figures.
+If an API key is not configured or an endpoint is unreachable, the system gracefully generates a **deterministic fallback narrative** with figure lineage tracing.
 
 ---
 
-## Architecture & Data Consistency
+## Deployment Options
 
-### Deterministic Layer (Ground Truth)
-The reconciliation and analytics modules are **pure functions** — they take validated billing records as input and produce deterministic output. No LLM calls are ever made in this layer. This guarantees:
+### Option 1: Single-Service All-in-One Deployment (Render / Railway)
+FastAPI automatically serves the built React SPA on `/` and API endpoints on `/api`.
 
-- **Consistency**: Same input always produces the same output
-- **Auditability**: Every computed number can be traced to specific input records
-- **Testability**: Covered by automated tests with hand-verified expected values
+- **Build Command**:
+  ```bash
+  cd frontend && npm install && npm run build && cd ../backend && pip install -r requirements.txt
+  ```
+- **Start Command**:
+  ```bash
+  python -m uvicorn backend.app.main:app --host 0.0.0.0 --port $PORT
+  ```
+- **Environment Variables**:
+  `OPENROUTER_API_KEY` = `your_openrouter_api_key_here`
 
-### Key Computation Formulas
-- **Total Billed** = Σ(line_item.qty × unit_price_paise) for non-refund rows
-- **Total Collected** = Σ(amount_paid_paise) for non-refund rows
-- **Outstanding** = Total Billed − Total Discounts − Total Collected
-- **Total Refunds** = Σ(|amount_paid_paise|) for refund rows (always positive)
-- **AOV (Average Consultation Value)** = Total Collected / Total Sales Visits
-- **Polypharmacy Rate** = % of prescriptions containing 2+ line items
+### Option 2: Decoupled Deployment (Netlify + Render)
+- **Frontend (Netlify)**:
+  - Base Directory: `frontend`
+  - Build Command: `npm run build`
+  - Publish Directory: `dist`
+  - Environment Variable: `VITE_API_BASE_URL` = `https://your-backend-service.onrender.com/api`
 
-### Money Representation
-All monetary values are **integer paise** throughout the stack — from database storage to API responses. This avoids floating-point precision issues entirely. The frontend converts to ₹ rupees for display.
+---
 
-### Data Validation Strategy
-Each row is validated independently using Pydantic models with strict types:
-- Missing `payment_mode` → defaults gracefully to cash (`default=PaymentMode.cash`)
-- Refund rows must have `amount_paid_paise ≤ 0`
-- Drug names are normalised to uppercase (typos like `PARACETMOL` are preserved as separate data entries)
-- Bad rows are logged, valid rows are processed — one bad row doesn't reject the whole file
+## REST API Contract
 
-### Narrative Grounding
-The LLM receives **only** the deterministic report as input and is explicitly instructed:
-1. Use only the provided numbers — zero invented figures
-2. Do not use emojis — maintain a professional executive tone
-3. If a metric can't be computed (e.g., profit without cost price), say so plainly
-4. Return a structured JSON with `traced_figures` mapping every number to its source
+Base URL: `/api` (or `http://localhost:8000/api`)
 
-If the LLM response is malformed or unavailable, a deterministic fallback narrative is generated with perfect figure tracing.
+### `POST /api/upload`
+Upload a billing log JSON file for processing.
+
+### `GET /api/reports`
+List all available reports.
+
+### `GET /api/reports/{clinic_id}/{date}`
+Get the full report (reconciliation + analytics + narrative).
+
+### `GET /api/reconciliation/{clinic_id}/{date}`
+Get reconciliation data only.
+
+### `GET /api/analytics/{clinic_id}/{date}`
+Get analytics data only.
+
+### `GET /api/narrative/{clinic_id}/{date}`
+Get the executive briefing with traced figures.
 
 ---
 
@@ -209,7 +182,8 @@ If the LLM response is malformed or unavailable, a deterministic fallback narrat
 
 ## Test Coverage
 
-14 tests covering:
+17 tests covering:
 - **Parser**: Malformed row detection, empty file, refund validation, invalid JSON, non-array input
 - **Reconciliation**: Normal day math, empty day zeros, refund-only day, payment mode breakdown
 - **Analytics**: Revenue bucketing, peak hour detection, drug ranking order, typo handling, empty/refund-only days
+- **Narrative**: Fallback behavior when API key is missing, mocked OpenRouter response, and dynamic model selection
