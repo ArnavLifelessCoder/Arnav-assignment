@@ -5,7 +5,7 @@ Takes the deterministic reconciliation + analytics reports as structured
 input and generates a WhatsApp-friendly summary. Every figure in the
 narrative is traced back to its source field.
 
-Uses Google Gemini (gemini-2.0-flash) — free tier available.
+Uses OpenRouter API (default model: google/gemini-2.0-flash-001).
 """
 
 from __future__ import annotations
@@ -190,9 +190,9 @@ back to its source field from the report. This is mandatory."""
 
 
 def _get_api_key() -> str:
-    """Retrieve Gemini API key from environment variable or .env file."""
-    api_key = os.environ.get("GEMINI_API_KEY", "").strip()
-    if api_key:
+    """Retrieve OpenRouter API key from environment variable or .env file."""
+    api_key = os.environ.get("OPENROUTER_API_KEY", "").strip()
+    if api_key and not api_key.startswith("your_"):
         return api_key
 
     # Check for .env file in backend/ directory or root directory
@@ -205,10 +205,10 @@ def _get_api_key() -> str:
             try:
                 for line in env_path.read_text(encoding="utf-8").splitlines():
                     line = line.strip()
-                    if line.startswith("GEMINI_API_KEY="):
+                    if line.startswith("OPENROUTER_API_KEY="):
                         val = line.split("=", 1)[1].strip().strip('"').strip("'")
-                        if val:
-                            os.environ["GEMINI_API_KEY"] = val
+                        if val and not val.startswith("your_"):
+                            os.environ["OPENROUTER_API_KEY"] = val
                             return val
             except Exception:
                 pass
@@ -221,7 +221,7 @@ async def generate_narrative(
     analytics: AnalyticsReport,
 ) -> NarrativeResponse:
     """
-    Generate an LLM narrative from the deterministic reports.
+    Generate an LLM narrative from the deterministic reports using OpenRouter API.
 
     Falls back gracefully if the LLM is unavailable or returns garbage.
     """
@@ -231,19 +231,56 @@ async def generate_narrative(
     figure_lookup = _build_figure_lookup(recon, analytics)
 
     if not api_key:
-        return _build_fallback_narrative(recon, analytics, figure_lookup,
-                                         error="GEMINI_API_KEY not set: using deterministic fallback")
+        return _build_fallback_narrative(
+            recon,
+            analytics,
+            figure_lookup,
+            error="OPENROUTER_API_KEY not set: using deterministic fallback",
+        )
+
+    model_name = os.environ.get("OPENROUTER_MODEL", "google/gemini-2.0-flash-001")
 
     try:
-        import google.generativeai as genai
+        import httpx
 
-        genai.configure(api_key=api_key)
-        model = genai.GenerativeModel("gemini-2.0-flash")
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(
+                "https://openrouter.ai/api/v1/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                    "HTTP-Referer": "https://github.com/SwasthiQ",
+                    "X-Title": "SwasthiQ EOD Agent",
+                },
+                json={
+                    "model": model_name,
+                    "messages": [
+                        {"role": "system", "content": SYSTEM_PROMPT},
+                        {"role": "user", "content": f"--- REPORT DATA ---\n{report_context}"},
+                    ],
+                    "response_format": {"type": "json_object"},
+                },
+            )
 
-        prompt = f"{SYSTEM_PROMPT}\n\n--- REPORT DATA ---\n{report_context}"
+        if response.status_code != 200:
+            return _build_fallback_narrative(
+                recon,
+                analytics,
+                figure_lookup,
+                error=f"OpenRouter API error (HTTP {response.status_code}): {response.text[:200]}: using deterministic fallback",
+            )
 
-        response = model.generate_content(prompt)
-        raw_text = response.text.strip()
+        data = response.json()
+        choices = data.get("choices", [])
+        if not choices:
+            return _build_fallback_narrative(
+                recon,
+                analytics,
+                figure_lookup,
+                error="OpenRouter API returned empty choices: using deterministic fallback",
+            )
+
+        raw_text = choices[0].get("message", {}).get("content", "").strip()
 
         # Try to extract JSON from the response
         parsed = _extract_json(raw_text)
@@ -252,30 +289,38 @@ async def generate_narrative(
             traced = []
             for tf in parsed.get("traced_figures", []):
                 if isinstance(tf, dict) and "figure" in tf:
-                    traced.append(TracedFigure(
-                        figure=str(tf.get("figure", "")),
-                        source_field=str(tf.get("source_field", "")),
-                        source_value=str(tf.get("source_value", "")),
-                    ))
+                    traced.append(
+                        TracedFigure(
+                            figure=str(tf.get("figure", "")),
+                            source_field=str(tf.get("source_field", "")),
+                            source_value=str(tf.get("source_value", "")),
+                        )
+                    )
+
+            actual_model = data.get("model", model_name)
 
             return NarrativeResponse(
                 clinic_id=recon.clinic_id,
                 date=recon.date,
                 narrative=parsed["narrative"],
                 traced_figures=traced,
-                llm_model="gemini-2.0-flash",
+                llm_model=f"openrouter/{actual_model}",
             )
         else:
             # LLM returned something but not in expected format
             return _build_fallback_narrative(
-                recon, analytics, figure_lookup,
-                error="LLM response was not in expected JSON format: using deterministic fallback"
+                recon,
+                analytics,
+                figure_lookup,
+                error="LLM response was not in expected JSON format: using deterministic fallback",
             )
 
     except Exception as e:
         return _build_fallback_narrative(
-            recon, analytics, figure_lookup,
-            error=f"LLM call failed: {str(e)}: using deterministic fallback"
+            recon,
+            analytics,
+            figure_lookup,
+            error=f"LLM call failed: {str(e)}: using deterministic fallback",
         )
 
 

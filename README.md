@@ -15,7 +15,7 @@ A full-stack financial reconciliation and operational intelligence platform that
 | Backend | Python 3.12, FastAPI, Pydantic, SQLite |
 | Frontend | React 18, Vite, Recharts, React Router |
 | Design System | Warm Porcelain & Ocean Cobalt Fintech System |
-| LLM | Google Gemini 2.0 Flash (with deterministic fallback) |
+| LLM | OpenRouter API (with deterministic fallback) |
 | Testing | pytest |
 
 ---
@@ -70,9 +70,9 @@ A full-stack financial reconciliation and operational intelligence platform that
 cd backend
 pip install -r requirements.txt
 
-# Optional: Set Gemini API key for LLM narratives in backend/.env
+# Optional: Set OpenRouter API key for LLM narratives in backend/.env
 # Without it, the system uses a deterministic fallback narrative
-# GEMINI_API_KEY=your-api-key-here
+# OPENROUTER_API_KEY=your-api-key-here
 
 # Start the server
 uvicorn app.main:app --reload --port 8000

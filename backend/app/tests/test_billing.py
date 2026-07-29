@@ -15,6 +15,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 from app.parser import parse_billing_log
 from app.reconciliation import compute_reconciliation
 from app.analytics import compute_analytics
+from app.narrative import generate_narrative
 
 
 # ── Sample Data ──
@@ -223,6 +224,82 @@ class TestAnalytics:
         drug_names = [d.drug_name for d in analytics.top_drugs_by_quantity]
         assert "PARACETAMOL" in drug_names
         assert "PARACETMOL" in drug_names
+
+
+# ═══════════════════════════════════════════
+# Narrative Tests
+# ═══════════════════════════════════════════
+
+class TestNarrative:
+    @pytest.mark.asyncio
+    async def test_fallback_when_no_api_key(self, monkeypatch):
+        """When OPENROUTER_API_KEY is unset, use deterministic fallback."""
+        monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+
+        raw = _load_log("billing_log_2026-07-27.json")
+        valid, errors = parse_billing_log(raw)
+        recon = compute_reconciliation(valid, "CLN-KNP-014", "2026-07-27", errors)
+        analytics = compute_analytics(valid, "CLN-KNP-014", "2026-07-27")
+
+        res = await generate_narrative(recon, analytics)
+        assert res.llm_model == "deterministic-fallback"
+        assert res.error is not None
+        assert "OPENROUTER_API_KEY not set" in res.error
+        assert len(res.traced_figures) > 0
+
+    @pytest.mark.asyncio
+    async def test_openrouter_narrative_generation(self, monkeypatch):
+        """Test narrative generation with mocked OpenRouter API response."""
+        monkeypatch.setenv("OPENROUTER_API_KEY", "test_key_123")
+
+        mock_payload = {
+            "model": "google/gemini-2.0-flash-001",
+            "choices": [
+                {
+                    "message": {
+                        "content": json.dumps({
+                            "narrative": "Today total collected was ₹3,200 across 19 visits.",
+                            "traced_figures": [
+                                {
+                                    "figure": "₹3,200",
+                                    "source_field": "total_collected_paise",
+                                    "source_value": "320000"
+                                }
+                            ]
+                        })
+                    }
+                }
+            ]
+        }
+
+        class MockResponse:
+            status_code = 200
+            def json(self):
+                return mock_payload
+
+        class MockAsyncClient:
+            def __init__(self, *args, **kwargs):
+                pass
+            async def __aenter__(self):
+                return self
+            async def __aexit__(self, *args):
+                pass
+            async def post(self, *args, **kwargs):
+                return MockResponse()
+
+        import httpx
+        monkeypatch.setattr(httpx, "AsyncClient", MockAsyncClient)
+
+        raw = _load_log("billing_log_2026-07-27.json")
+        valid, errors = parse_billing_log(raw)
+        recon = compute_reconciliation(valid, "CLN-KNP-014", "2026-07-27", errors)
+        analytics = compute_analytics(valid, "CLN-KNP-014", "2026-07-27")
+
+        res = await generate_narrative(recon, analytics)
+        assert res.llm_model == "openrouter/google/gemini-2.0-flash-001"
+        assert "3,200" in res.narrative
+        assert len(res.traced_figures) == 1
+        assert res.traced_figures[0].source_field == "total_collected_paise"
 
 
 if __name__ == "__main__":
