@@ -1,0 +1,24 @@
+# Environment variables
+.env
+*.env
+backend/.env
+
+# Database & Cache
+*.db
+backend/*.db
+backend/app/*.db
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.venv/
+env/
+venv/
+
+# Node / React
+node_modules/
+dist/
+.vite/
