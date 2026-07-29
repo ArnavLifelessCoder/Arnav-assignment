@@ -220,8 +220,49 @@ def _load_env_config() -> tuple[str, str]:
             except Exception:
                 pass
 
+FREE_MODELS = [
+    "google/gemini-2.0-flash-lite-preview-02-05:free",
+    "meta-llama/llama-3.3-70b-instruct:free",
+    "google/gemini-2.0-flash-exp:free",
+    "qwen/qwen-2.5-coder-32b-instruct:free",
+    "deepseek/deepseek-r1:free",
+    "mistralai/mistral-7b-instruct:free",
+]
+
+
+def _load_env_config() -> tuple[str, str]:
+    """Retrieve OpenRouter API key and model name from environment variables or .env file."""
+    api_key = os.environ.get("OPENROUTER_API_KEY", "").strip()
+    model = os.environ.get("OPENROUTER_MODEL", "").strip()
+
+    if api_key.startswith("your_"):
+        api_key = ""
+
+    # Check for .env file in backend/ directory or root directory
+    candidates = [
+        Path(__file__).parent.parent / ".env",
+        Path(__file__).parent.parent.parent / ".env",
+    ]
+    for env_path in candidates:
+        if env_path.is_file():
+            try:
+                for line in env_path.read_text(encoding="utf-8").splitlines():
+                    line = line.strip()
+                    if line.startswith("OPENROUTER_API_KEY=") and not api_key:
+                        val = line.split("=", 1)[1].strip().strip('"').strip("'")
+                        if val and not val.startswith("your_"):
+                            api_key = val
+                            os.environ["OPENROUTER_API_KEY"] = val
+                    elif line.startswith("OPENROUTER_MODEL=") and not model:
+                        val = line.split("=", 1)[1].strip().strip('"').strip("'")
+                        if val:
+                            model = val
+                            os.environ["OPENROUTER_MODEL"] = val
+            except Exception:
+                pass
+
     if not model:
-        model = "google/gemini-2.0-flash-001"
+        model = FREE_MODELS[0]
 
     return api_key, model
 
@@ -240,9 +281,7 @@ async def generate_narrative(
     """
     Generate an LLM narrative from the deterministic reports using OpenRouter API.
 
-    Supports custom model selection via the `model` parameter,
-    OPENROUTER_MODEL environment variable / .env file, or defaults to
-    google/gemini-2.0-flash-001.
+    Tries free OpenRouter models ($0 cost) sequentially until successful.
 
     Falls back gracefully if the LLM is unavailable or returns garbage.
     """
@@ -259,90 +298,93 @@ async def generate_narrative(
             error="OPENROUTER_API_KEY not set: using deterministic fallback",
         )
 
-    model_name = model or env_model or "google/gemini-2.0-flash-001"
+    # Build sequence of model candidates to try (100% free models)
+    candidate_models: list[str] = []
+    if model:
+        candidate_models.append(model)
+    if env_model and env_model not in candidate_models:
+        candidate_models.append(env_model)
+    for m in FREE_MODELS:
+        if m not in candidate_models:
+            candidate_models.append(m)
 
-    try:
-        import httpx
+    import httpx
 
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.post(
-                "https://openrouter.ai/api/v1/chat/completions",
-                headers={
-                    "Authorization": f"Bearer {api_key}",
-                    "Content-Type": "application/json",
-                    "HTTP-Referer": "https://github.com/SwasthiQ",
-                    "X-Title": "SwasthiQ EOD Agent",
-                },
-                json={
-                    "model": model_name,
-                    "messages": [
-                        {"role": "system", "content": SYSTEM_PROMPT},
-                        {"role": "user", "content": f"--- REPORT DATA ---\n{report_context}"},
-                    ],
-                    "response_format": {"type": "json_object"},
-                },
-            )
+    last_error = ""
 
-        if response.status_code != 200:
-            return _build_fallback_narrative(
-                recon,
-                analytics,
-                figure_lookup,
-                error=f"OpenRouter API error (HTTP {response.status_code}): {response.text[:200]}: using deterministic fallback",
-            )
+    for target_model in candidate_models:
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.post(
+                    "https://openrouter.ai/api/v1/chat/completions",
+                    headers={
+                        "Authorization": f"Bearer {api_key}",
+                        "Content-Type": "application/json",
+                        "HTTP-Referer": "https://github.com/SwasthiQ",
+                        "X-Title": "SwasthiQ EOD Agent",
+                    },
+                    json={
+                        "model": target_model,
+                        "messages": [
+                            {"role": "system", "content": SYSTEM_PROMPT},
+                            {"role": "user", "content": f"--- REPORT DATA ---\n{report_context}"},
+                        ],
+                        "response_format": {"type": "json_object"},
+                    },
+                )
 
-        data = response.json()
-        choices = data.get("choices", [])
-        if not choices:
-            return _build_fallback_narrative(
-                recon,
-                analytics,
-                figure_lookup,
-                error="OpenRouter API returned empty choices: using deterministic fallback",
-            )
+            if response.status_code != 200:
+                last_error = f"OpenRouter API error ({target_model}: HTTP {response.status_code}): {response.text[:150]}"
+                continue
 
-        raw_text = choices[0].get("message", {}).get("content", "").strip()
+            data = response.json()
+            choices = data.get("choices", [])
+            if not choices:
+                last_error = f"OpenRouter API returned empty choices for {target_model}"
+                continue
 
-        # Try to extract JSON from the response
-        parsed = _extract_json(raw_text)
+            raw_text = choices[0].get("message", {}).get("content", "").strip()
 
-        if parsed and "narrative" in parsed:
-            traced = []
-            for tf in parsed.get("traced_figures", []):
-                if isinstance(tf, dict) and "figure" in tf:
-                    traced.append(
-                        TracedFigure(
-                            figure=str(tf.get("figure", "")),
-                            source_field=str(tf.get("source_field", "")),
-                            source_value=str(tf.get("source_value", "")),
+            # Try to extract JSON from the response
+            parsed = _extract_json(raw_text)
+
+            if parsed and "narrative" in parsed:
+                traced = []
+                for tf in parsed.get("traced_figures", []):
+                    if isinstance(tf, dict) and "figure" in tf:
+                        traced.append(
+                            TracedFigure(
+                                figure=str(tf.get("figure", "")),
+                                source_field=str(tf.get("source_field", "")),
+                                source_value=str(tf.get("source_value", "")),
+                            )
                         )
-                    )
 
-            actual_model = data.get("model", model_name)
+                actual_model = data.get("model", target_model)
 
-            return NarrativeResponse(
-                clinic_id=recon.clinic_id,
-                date=recon.date,
-                narrative=parsed["narrative"],
-                traced_figures=traced,
-                llm_model=f"openrouter/{actual_model}",
-            )
-        else:
-            # LLM returned something but not in expected format
-            return _build_fallback_narrative(
-                recon,
-                analytics,
-                figure_lookup,
-                error="LLM response was not in expected JSON format: using deterministic fallback",
-            )
+                return NarrativeResponse(
+                    clinic_id=recon.clinic_id,
+                    date=recon.date,
+                    narrative=parsed["narrative"],
+                    traced_figures=traced,
+                    llm_model=f"openrouter/{actual_model}",
+                )
+            else:
+                last_error = f"LLM output for {target_model} not in expected JSON format"
+                continue
 
-    except Exception as e:
-        return _build_fallback_narrative(
-            recon,
-            analytics,
-            figure_lookup,
-            error=f"LLM call failed: {str(e)}: using deterministic fallback",
-        )
+        except Exception as e:
+            last_error = f"LLM call failed for {target_model}: {str(e)}"
+            continue
+
+    # If all candidate models failed, return deterministic fallback
+    return _build_fallback_narrative(
+        recon,
+        analytics,
+        figure_lookup,
+        error=f"{last_error}: using deterministic fallback",
+    )
+
 
 
 def _extract_json(text: str) -> dict | None:
