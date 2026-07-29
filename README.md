@@ -1,5 +1,7 @@
 # SwasthiQ: EOD Billing & Analytics Agent
 
+Deployed Link - https://arnav-assignment.onrender.com/reconciliation
+
 A full-stack financial reconciliation and operational intelligence platform that ingests a clinic's daily billing log and produces:
 1. **Deterministic EOD Reconciliation**: Gross billed, net collected, outstanding balance, and refunds (split by payment channel).
 2. **Advanced Operational Analytics**: Hourly revenue velocity, shift distribution, price-tier breakdown, polypharmacy rate, AOV, and doctor prescription leaderboards.
